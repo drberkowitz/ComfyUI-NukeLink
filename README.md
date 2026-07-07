@@ -14,28 +14,28 @@ A bridge between Nuke and ComfyUI on the same machine, allowing you to send Read
 
 ---
 
-## Table of Contents
+## 📚 Table of Contents
 
-- [Features](#features)
-- [Requirements](#requirements)
-- [Installation](#installation)
+- [✨ Features](#-features)
+- [📋 Requirements](#-requirements)
+- [🛠️ Installation](#️-installation)
   - [ComfyUI Side](#comfyui-side)
   - [Nuke Side](#nuke-side)
   - [Configuration](#configuration)
-- [Usage](#usage)
-  - [Nuke to ComfyUI](#nuke-to-comfyui)
-  - [ComfyUI to Nuke](#comfyui-to-nuke)
+- [🚀 Usage](#-usage)
+  - [➡️ Nuke to ComfyUI](#-nuke-to-comfyui)
+  - [⬅️ ComfyUI to Nuke](#-comfyui-to-nuke)
   - [ComfyUI Settings Panel](#comfyui-settings-panel)
-- [Nodes](#nodes)
+- [🧩 Nodes](#-nodes)
   - [Read - NukeLink](#read---nukelink)
   - [Write - NukeLink](#write---nukelink)
   - [Path Builder - NukeLink](#path-builder---nukelink)
-- [Known Limitations](#known-limitations)
-- [Acknowledgements](#acknowledgements)
+- [⚠️ Known Limitations](#️-known-limitations)
+- [🙏 Acknowledgements](#-acknowledgements)
 
 ---
 
-## Features
+## ✨ Features
 
 - Send one or more Nuke Read nodes to ComfyUI with knob values intact: file path, colorspace, frame range, and missing frames mode
 - Supports a wide range of file types including EXR, TIFF, DPX, PNG, JPG, TGA, and more
@@ -51,7 +51,7 @@ A bridge between Nuke and ComfyUI on the same machine, allowing you to send Read
 
 ---
 
-## Requirements
+## 📋 Requirements
 
 - Nuke 10 or later (including Nuke Indie)
 - ComfyUI local install: standard, portable, or desktop (not ComfyUI Cloud)
@@ -63,7 +63,7 @@ A bridge between Nuke and ComfyUI on the same machine, allowing you to send Read
 
 ---
 
-## Installation
+## 🛠️ Installation
 
 ### ComfyUI Side
 
@@ -109,22 +109,26 @@ Open `sendToComfyUI.py` in a text editor. The config block near the top of the f
 
 ---
 
-## Usage
+## 🚀 Usage
 
-### Nuke to ComfyUI
+### ➡️ Nuke to ComfyUI
 
 1. In Nuke, select one or more Read nodes
 2. Tab search for **Send To ComfyUI** or right click in the node graph and select it under the SendToComfyUI menu
 3. An alert will pop up confirming the node was sent and asking you to switch to ComfyUI. A NukeLink - Read node will be dropped on the canvas for each selected Nuke Read node, pre-populated with file path, colorspace, frame range, and missing frames mode. A Path Builder node will also be created to the right, pre-populated with your output location, version number, and shot name.  The Path Builder node also includes the correct Nuke listener port so the Write node knows exactly where to send renders back to.
 
-### ComfyUI to Nuke
+### ⬅️ ComfyUI to Nuke
 
 1. In ComfyUI, right-click a Write node after the graph has been executed and image(s) have been written to disk
 2. Select **Send to Nuke** from the context menu
 3. Switch back to Nuke. A Read node will have dropped into the node graph pointing to the rendered output.
 
-![ComfyUI Write node right-click context menu](https://github.com/user-attachments/assets/bb30a1af-10a2-4574-a307-2af047026d11)
-![Toast notification](https://github.com/user-attachments/assets/3c35e73e-aa1a-454a-b20b-6c11e82615b1)
+<table>
+  <tr>
+    <td><img src="https://github.com/user-attachments/assets/bb30a1af-10a2-4574-a307-2af047026d11" width="100%"/></td>
+    <td><img src="https://github.com/user-attachments/assets/3c35e73e-aa1a-454a-b20b-6c11e82615b1" width="100%"/></td>
+  </tr>
+</table>
 
 ### ComfyUI Settings Panel
 
@@ -139,7 +143,7 @@ Settings include defaults for:
 
 ---
 
-## Nodes
+## 🧩 Nodes
 
 ### Read - NukeLink
 
@@ -185,7 +189,7 @@ The Path Builder constructs an output file path and passes it to a connected Wri
 
 ---
 
-## Known Limitations
+## ⚠️ Known Limitations
 
 - **Mac and Linux are untested.** NukeLink was designed with cross-platform support in mind, but could not be thoroughly tested beyond Windows.
 - **Multiple Write nodes cannot be sent back to Nuke simultaneously.** Only one Write node at a time can be sent via the right-click Send to Nuke option.
@@ -193,7 +197,7 @@ The Path Builder constructs an output file path and passes it to a connected Wri
 
 ---
 
-## Acknowledgements
+## 🙏 Acknowledgements
 
 **Nuke node logic** - [sumitchatterjee13](https://github.com/sumitchatterjee13/nuke-nodes-comfyui) for the foundational Nuke node approach this tool builds on.
 
