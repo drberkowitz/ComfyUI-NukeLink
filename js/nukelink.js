@@ -70,36 +70,62 @@ async function scanForNukePort() {
     return null;
 }
 
-function collectFilepathAncestors(node) {
-    const visited = new Set();
-
-    function walk(n) {
-        if (!n || visited.has(n.id)) return;
-        visited.add(n.id);
-        for (const input of n.inputs || []) {
-            if (!input.link) continue;
-            const link = app.graph.links[input.link];
-            if (!link) continue;
-            const upstream = app.graph.getNodeById(link.origin_id);
-            if (upstream) walk(upstream);
-        }
-    }
-
-    // Start walk from file_path input only on the Write node
-    const fileInput = node.inputs?.find(inp => inp.name === "file_path");
-    if (fileInput?.link) {
-        const link = app.graph.links[fileInput.link];
-        if (link) {
-            const upstream = app.graph.getNodeById(link.origin_id);
-            if (upstream) walk(upstream);
-        }
-    }
-
-    visited.add(node.id);
-    return visited;
+function getPathBuilderFingerprint(upstream) {
+    const get = (name) => upstream.widgets?.find(w => w.name === name)?.value;
+    return JSON.stringify([
+        get("name") ?? "",
+        get("shot") ?? "",
+        get("file_location") ?? "",
+        get("bypass_location") ?? false,
+        get("sequence_folder") ?? true,
+        get("name_pattern") ?? "{shot}_{name}_v{version}",
+        String(get("version_number") ?? "").trim(),
+        get("frame_delim") ?? ".",
+    ]);
 }
 
-function resolvePathFromWriteNode(writeNode) {
+async function resolvePathBuilderPath(upstream, force = false) {
+    const fingerprint = getPathBuilderFingerprint(upstream);
+
+    if (!force && upstream._resolveCache && upstream._resolveCache.fingerprint === fingerprint) {
+        return upstream._resolveCache.path;
+    }
+
+    const get = (name) => upstream.widgets?.find(w => w.name === name)?.value;
+
+    try {
+        const res = await fetch("/nukelink/resolvepath", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                name:            get("name") ?? "",
+                shot:            get("shot") ?? "",
+                file_location:   get("file_location") ?? "",
+                bypass_location: get("bypass_location") ?? false,
+                sequence_folder: get("sequence_folder") ?? true,
+                name_pattern:    get("name_pattern") ?? "{shot}_{name}_v{version}",
+                version_number:  String(get("version_number") ?? "").trim(),
+                frame_delim:     get("frame_delim") ?? ".",
+            }),
+        });
+
+        const data = await res.json();
+
+        if (!res.ok) {
+            showToast("error", "Resolve Path", data.error ?? `Server error ${res.status}`);
+            return null;
+        }
+
+        upstream._resolveCache = { fingerprint, path: data.path };
+        return data.path;
+    } catch (e) {
+        console.error("[NukeLink] resolvepath fetch failed:", e);
+        showToast("error", "Resolve Path", "Could not reach the NukeLink server.");
+        return null;
+    }
+}
+
+async function resolvePathFromWriteNode(writeNode) {
     if (writeNode._lastFilePath) {
         return writeNode._lastFilePath;
     }
@@ -112,34 +138,7 @@ function resolvePathFromWriteNode(writeNode) {
         if (link) {
             const upstream = app.graph.getNodeById(link.origin_id);
             if (upstream?.type === "Path Builder - NukeLink") {
-                const get = (name) => upstream.widgets?.find(w => w.name === name)?.value;
-
-                const name           = get("name") ?? "";
-                const fileLocation   = get("file_location") ?? "";
-                const bypassLocation = get("bypass_location") ?? false;
-                const sequenceFolder = get("sequence_folder") ?? true;
-                const versionAppend  = get("version_append") ?? true;
-                const versionNumber  = String(get("version_number") ?? "").trim();
-                const versionDelim   = get("version_delim") ?? "_";
-                const frameDelim     = get("frame_delim") ?? ".";
-
-                if (!/^\d+$/.test(versionNumber)) return null;
-
-                const shot = get("shot") ?? "";
-                const nameFull = shot ? `${shot}${versionDelim}${name}` : name;
-                const stem = versionAppend
-                    ? `${nameFull}${versionDelim}v${versionNumber}`
-                    : nameFull;
-
-                const folder = bypassLocation
-                    ? ""
-                    : (fileLocation.replace(/[/\\]+$/, "") + "/");
-
-                const path = sequenceFolder
-                    ? `${folder}${stem}/${stem}${frameDelim}`
-                    : `${folder}${stem}${frameDelim}`;
-
-                return path;
+                return await resolvePathBuilderPath(upstream);
             }
         }
     }
@@ -147,16 +146,20 @@ function resolvePathFromWriteNode(writeNode) {
     return writeNode.widgets?.find(w => w.name === "file_path")?.value ?? "";
 }
 
-async function openInFolder(path) {
+async function openInFolder(path, fileType, firstFrame) {
     if (!path) {
         console.warn("[NukeLink] openInFolder: no path provided");
         return;
     }
     try {
+        const body = { path };
+        if (fileType != null) body.file_type = fileType;
+        if (firstFrame != null) body.first_frame = firstFrame;
+
         const res = await fetch("/nukelink/openinfolder", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ path }),
+            body: JSON.stringify(body),
         });
         if (!res.ok) {
             const text = await res.text();
@@ -540,63 +543,78 @@ function addVideoPreview(nodeType) {
     });
 }
 
+function buildPreviewMenuOptions(node, previewWidget) {
+    const videoEl = previewWidget.videoEl;
+    const parentEl = previewWidget.parentEl;
+    const options = [];
+
+    if (videoEl && videoEl.style.display !== "none" && videoEl.src) {
+        options.push({
+            content: previewWidget._state.paused ? "Resume preview" : "Pause preview",
+            callback: () => {
+                if (previewWidget._state.paused) {
+                    videoEl.play().catch(() => {});
+                    previewWidget._state.paused = false;
+                } else {
+                    videoEl.pause();
+                    previewWidget._state.paused = true;
+                }
+            },
+        });
+    }
+
+    options.push({
+        content: previewWidget._state.hidden ? "Show preview" : "Hide preview",
+        callback: () => {
+            const wasHidden = previewWidget._state.hidden;
+            previewWidget._state.hidden = !wasHidden;
+            parentEl.hidden = previewWidget._state.hidden;
+            if (wasHidden) {
+                previewWidget.updateSource(true);
+            }
+            fitHeight(node);
+        },
+    });
+
+    options.push({
+        content: "Re-render preview",
+        callback: () => {
+            previewWidget._state.hidden = false;
+            parentEl.hidden = false;
+            previewWidget.updateSource(true);
+        },
+    });
+
+    return options;
+}
+
 function addPreviewOptions(nodeType) {
     chainCallback(nodeType.prototype, "getExtraMenuOptions", function(_, options) {
         const previewWidget = this.widgets?.find(w => w.name === "videopreview");
         if (!previewWidget) return;
 
-        const videoEl = previewWidget.videoEl;
-        const imgEl = previewWidget.imgEl;
-        const parentEl = previewWidget.parentEl;
-        const extraOptions = [];
+        const extraOptions = buildPreviewMenuOptions(this, previewWidget);
 
-        // Pause/Resume - only when video is active
-        if (videoEl && videoEl.style.display !== "none" && videoEl.src) {
-            extraOptions.push({
-                content: previewWidget._state.paused ? "Resume preview" : "Pause preview",
+        // Re-render (Read variant) also syncs colorspace/missing_frames into params first
+        const reRenderIndex = extraOptions.findIndex(o => o.content === "Re-render preview");
+        if (reRenderIndex !== -1) {
+            extraOptions[reRenderIndex] = {
+                content: "Re-render preview",
                 callback: () => {
-                    if (previewWidget._state.paused) {
-                        videoEl.play().catch(() => {});
-                        previewWidget._state.paused = false;
-                    } else {
-                        videoEl.pause();
-                        previewWidget._state.paused = true;
+                    const colorspaceWidget = this.widgets?.find(w => w.name === "colorspace");
+                    const missingWidget = this.widgets?.find(w => w.name === "missing_frames");
+                    if (colorspaceWidget) {
+                        previewWidget._state.params.colorspace = colorspaceWidget.value;
                     }
-                },
-            });
-        }
-
-        // Show/Hide
-        extraOptions.push({
-            content: previewWidget._state.hidden ? "Show preview" : "Hide preview",
-            callback: () => {
-                const wasHidden = previewWidget._state.hidden;
-                previewWidget._state.hidden = !wasHidden;
-                parentEl.hidden = previewWidget._state.hidden;
-                if (wasHidden) {
+                    if (missingWidget) {
+                        previewWidget._state.params.missing_frames = missingWidget.value;
+                    }
+                    previewWidget._state.hidden = false;
+                    previewWidget.parentEl.hidden = false;
                     previewWidget.updateSource(true);
-                }
-                fitHeight(this);
-            },
-        });
-
-        // Re-render - re-renders preview
-        extraOptions.push({
-            content: "Re-render preview",
-            callback: () => {
-                const colorspaceWidget = this.widgets?.find(w => w.name === "colorspace");
-                const missingWidget = this.widgets?.find(w => w.name === "missing_frames");
-                if (colorspaceWidget) {
-                    previewWidget._state.params.colorspace = colorspaceWidget.value;
-                }
-                if (missingWidget) {
-                    previewWidget._state.params.missing_frames = missingWidget.value;
-                }
-                previewWidget._state.hidden = false;
-                previewWidget.parentEl.hidden = false;
-                previewWidget.updateSource(true);
-            },
-        });
+                },
+            };
+        }
 
         // Sync - reset all nukelink previews to frame 0
         extraOptions.push({
@@ -627,54 +645,58 @@ function addWriteOptions(nodeType) {
         const extraOptions = [];
 
         if (previewWidget) {
-            const videoEl = previewWidget.videoEl;
-            const parentEl = previewWidget.parentEl;
-
-            if (videoEl && videoEl.style.display !== "none" && videoEl.src) {
-                extraOptions.push({
-                    content: previewWidget._state.paused ? "Resume preview" : "Pause preview",
-                    callback: () => {
-                        if (previewWidget._state.paused) {
-                            videoEl.play().catch(() => {});
-                            previewWidget._state.paused = false;
-                        } else {
-                            videoEl.pause();
-                            previewWidget._state.paused = true;
-                        }
-                    },
-                });
-            }
-
-            extraOptions.push({
-                content: previewWidget._state.hidden ? "Show preview" : "Hide preview",
-                callback: () => {
-                    const wasHidden = previewWidget._state.hidden;
-                    previewWidget._state.hidden = !wasHidden;
-                    parentEl.hidden = previewWidget._state.hidden;
-                    if (wasHidden) {
-                        previewWidget.updateSource(true);
-                    }
-                    fitHeight(this);
-                },
-            });
-
-            extraOptions.push({
-                content: "Re-render preview",
-                callback: () => {
-                    previewWidget._state.hidden = false;
-                    parentEl.hidden = false;
-                    previewWidget.updateSource(true);
-                },
-            });
-
+            extraOptions.push(...buildPreviewMenuOptions(this, previewWidget));
             extraOptions.push(null);
         }
 
         extraOptions.push({
             content: getOpenInFolderLabel(),
-            callback: () => {
-                const path = resolvePathFromWriteNode(this);
-                openInFolder(path);
+            callback: async () => {
+                const path = await resolvePathFromWriteNode(this);
+                if (!path) return;
+                const fileTypeWidget = this.widgets?.find(w => w.name === "file_type");
+                const firstFrameWidget = this.widgets?.find(w => w.name === "first_frame");
+                openInFolder(path, fileTypeWidget?.value, firstFrameWidget?.value);
+            },
+        });
+
+        extraOptions.push({
+            content: "Create Read from Write",
+            callback: async () => {
+                const writeNode = this;
+                if (!writeNode._lastFilePath || !writeNode._lastExecutionResult) {
+                    showToast("error", "Create Read from Write", "This Write node hasn't executed yet.");
+                    return;
+                }
+
+                const filePath = await resolvePathFromWriteNode(writeNode);
+                if (!filePath) {
+                    showToast("error", "Create Read from Write", "Could not resolve file path.");
+                    return;
+                }
+
+                const missingFrames = app.ui.settings.getSettingValue("NukeLink.Read.MissingFrames", "black");
+
+                const newNode = LiteGraph.createNode("Read - NukeLink");
+                if (!newNode) {
+                    console.error("[NukeLink] Failed to create Read - NukeLink node");
+                    return;
+                }
+                app.graph.add(newNode);
+                newNode.pos = [
+                    writeNode.pos[0] + writeNode.size[0] + 50,
+                    writeNode.pos[1],
+                ];
+
+                nukeLinkApplyRead(newNode, {
+                    file_path:      filePath,
+                    first_frame:    writeNode._lastExecutionResult.first_frame,
+                    last_frame:     writeNode._lastExecutionResult.last_frame,
+                    colorspace:     writeNode._lastExecutionResult.colorspace,
+                    missing_frames: missingFrames,
+                });
+
+                app.graph.setDirtyCanvas(true);
             },
         });
 
@@ -698,7 +720,7 @@ function addWriteOptions(nodeType) {
                     }
                 }
 
-                filePath = resolvePathFromWriteNode(node);
+                filePath = await resolvePathFromWriteNode(node);
 
                 if (!filePath) {
                     showToast("error", "Send to Nuke", "Could not resolve file path.");
@@ -730,14 +752,20 @@ function addWriteOptions(nodeType) {
 
                 // POST to server
                 try {
+                    const body = {
+                        file_path: filePath,
+                        colorspace: colorspace,
+                        nuke_port: nukePort,
+                    };
+                    if (node._lastExecutionResult) {
+                        body.first_frame = node._lastExecutionResult.first_frame;
+                        body.last_frame = node._lastExecutionResult.last_frame;
+                    }
+
                     const res = await fetch("/nukelink/sendtonuke", {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({
-                            file_path: filePath,
-                            colorspace: colorspace,
-                            nuke_port: nukePort,
-                        }),
+                        body: JSON.stringify(body),
                     });
                     const text = await res.text();
                     if (res.ok) {
@@ -755,6 +783,18 @@ function addWriteOptions(nodeType) {
         });
 
         options.unshift(...extraOptions, null);
+    });
+}
+
+function addUpdatePathPreviewOption(nodeType) {
+    chainCallback(nodeType.prototype, "getExtraMenuOptions", function(_, options) {
+        const node = this;
+        options.unshift({
+            content: "Update Path Preview",
+            callback: () => {
+                node.updatePreview(true);
+            },
+        }, null);
     });
 }
 
@@ -953,6 +993,34 @@ function setupNukeWrite(node) {
     }, 0);
 }
 
+function setupNukePathBuilder(node) {
+    setTimeout(() => {
+        if (node._nukeWasConfigured) return;
+
+        const getSetting = (id, fallback) => {
+            const val = app.ui.settings.getSettingValue(id);
+            return (val !== undefined && val !== null) ? val : fallback;
+        };
+
+        const defaults = {
+            name:            getSetting("NukeLink.PathBuilder.Name", ""),
+            shot:            getSetting("NukeLink.PathBuilder.Shot", ""),
+            file_location:   getSetting("NukeLink.PathBuilder.FileLocation", ""),
+            bypass_location: getSetting("NukeLink.PathBuilder.BypassLocation", false),
+            name_pattern:    getSetting("NukeLink.PathBuilder.NamePattern", "{shot}_{name}_v{version}"),
+            sequence_folder: getSetting("NukeLink.PathBuilder.SequenceFolder", true),
+            version_number:  getSetting("NukeLink.PathBuilder.VersionNumber", "001"),
+            version_iterate: getSetting("NukeLink.PathBuilder.VersionIterate", true),
+            frame_delim:     getSetting("NukeLink.PathBuilder.FrameDelim", "."),
+        };
+
+        for (const [name, value] of Object.entries(defaults)) {
+            const widget = node.widgets?.find(w => w.name === name);
+            if (widget) widget.value = value;
+        }
+    }, 0);
+}
+
 app.registerExtension({
     name: "NukeLink",
 
@@ -1033,6 +1101,60 @@ app.registerExtension({
             type: "number",
             attrs: { min: 0, step: 1, max: 99999 },
             defaultValue: 1001,
+        },
+        {
+            id: "NukeLink.PathBuilder.FrameDelim",
+            name: "Default frame delim",
+            type: "text",
+            defaultValue: ".",
+        },
+        {
+            id: "NukeLink.PathBuilder.VersionIterate",
+            name: "Default version iterate",
+            type: "boolean",
+            defaultValue: true,
+        },
+        {
+            id: "NukeLink.PathBuilder.VersionNumber",
+            name: "Default version number",
+            type: "text",
+            defaultValue: "001",
+        },
+        {
+            id: "NukeLink.PathBuilder.SequenceFolder",
+            name: "Default sequence folder",
+            type: "boolean",
+            defaultValue: true,
+        },
+        {
+            id: "NukeLink.PathBuilder.NamePattern",
+            name: "Default name pattern",
+            type: "text",
+            defaultValue: "{shot}_{name}_v{version}",
+        },
+        {
+            id: "NukeLink.PathBuilder.BypassLocation",
+            name: "Default bypass location",
+            type: "boolean",
+            defaultValue: false,
+        },
+        {
+            id: "NukeLink.PathBuilder.FileLocation",
+            name: "Default file location",
+            type: "text",
+            defaultValue: "",
+        },
+        {
+            id: "NukeLink.PathBuilder.Shot",
+            name: "Default shot",
+            type: "text",
+            defaultValue: "",
+        },
+        {
+            id: "NukeLink.PathBuilder.Name",
+            name: "Default name",
+            type: "text",
+            defaultValue: "",
         },
     ],
 
@@ -1123,6 +1245,7 @@ app.registerExtension({
                 node.onConfigure = function(data) {
                     node._nukeWasConfigured = true;
                 };
+                setupNukePathBuilder(node);
                 setTimeout(() => {
                     const portWidget = node.widgets?.find(w => w.name === "nuke_port");
                     if (portWidget) {
@@ -1132,9 +1255,42 @@ app.registerExtension({
                         portWidget.computeSize = () => [0, -4];
                     }
                 }, 0);
+
+                const container = document.createElement("div");
+                container.style.cssText = "width:100%;overflow:visible;";
+
+                const previewEl = document.createElement("div");
+                previewEl.style.cssText = "width:100%;font-size:10px;font-style:italic;color:#666;padding:6px 10px 12px;box-sizing:border-box;word-break:break-all;";
+                previewEl.textContent = "";
+                container.appendChild(previewEl);
+
+                const previewWidget = node.addDOMWidget("pathpreview", "preview", container, {
+                    serialize: false,
+                    hideOnZoom: false,
+                });
+                previewWidget.computeSize = function(width) {
+                    return [width, previewEl.textContent ? 18 : 0];
+                };
+
+                node.updatePreview = async function(force = false) {
+                    const path = await resolvePathBuilderPath(node, force);
+                    previewEl.textContent = path ?? "";
+                    previewWidget.computeSize = function(width) {
+                        return [width, path ? previewEl.scrollHeight + 8 : 0];
+                    };
+                    fitHeight(node);
+                };
+
+                setTimeout(() => {
+                    if (node._nukeWasConfigured) {
+                        node.updatePreview();
+                    }
+                }, 0);
             });
 
             chainCallback(nodeType.prototype, "onExecuted", function(message) {
+                this.updatePreview();
+
                 if (!message) return;
                 const versionWidget = this.widgets?.find(w => w.name === "version_number");
                 const iterateWidget = this.widgets?.find(w => w.name === "version_iterate");
@@ -1148,6 +1304,8 @@ app.registerExtension({
                 const next = parseInt(stripped, 10) + 1;
                 versionWidget.value = String(next).padStart(padWidth, "0");
             });
+
+            addUpdatePathPreviewOption(nodeType);
         }
 
         if (nodeData.name === "Write - NukeLink") {
@@ -1177,6 +1335,12 @@ app.registerExtension({
             });
 
             chainCallback(nodeType.prototype, "onExecuted", function(message) {
+                const errorMsg = message?.nukelink_error?.[0];
+                if (errorMsg) {
+                    showToast("error", "Write - NukeLink", errorMsg);
+                    return;
+                }
+
                 const preview = message?.nukelink_preview?.[0];
 
                 if (!preview || !preview.filename) return;
@@ -1195,6 +1359,12 @@ app.registerExtension({
                 }
 
                 this._lastFilePath = preview.filename;
+                this._lastExecutionResult = {
+                    filename:    preview.filename,
+                    first_frame: preview.first_frame,
+                    last_frame:  preview.last_frame,
+                    colorspace:  preview.colorspace,
+                };
 
                 this.updateParameters(params, true);
             });
@@ -1202,9 +1372,111 @@ app.registerExtension({
     }
 });
 
+// Configure a Read - NukeLink node with data sent from Nuke.
+function nukeLinkApplyRead(node, read) {
+    node._nukeWasConfigured = true;
+    const showPreview = app.ui.settings.getSettingValue("NukeLink.Read.ShowPreviewByDefault", true);
+    const playPreview = app.ui.settings.getSettingValue("NukeLink.Read.PlayPreviewByDefault", true);
+    node._nukeLinkPreviewRestore = {
+        hidden: !showPreview,
+        paused: !playPreview,
+    };
+    node._nukeReadRestore = {
+        first_frame:    read.first_frame,
+        last_frame:     read.last_frame,
+        colorspace:     read.colorspace,
+        missing_frames: read.missing_frames,
+    };
+
+    const fileWidget = node.widgets?.find(w => w.name === "file_path");
+    if (fileWidget) fileWidget.value = read.file_path;
+
+    setTimeout(() => {
+        node.updateParameters({
+            filename:       read.file_path,
+            first_frame:    read.first_frame,
+            last_frame:     read.last_frame,
+            colorspace:     read.colorspace,
+            missing_frames: read.missing_frames,
+        }, true);
+    }, 0);
+}
+
+function nukeLinkSetWidget(node, name, value) {
+    const w = node?.widgets?.find(w => w.name === name);
+    if (w) w.value = value;
+}
+
+// Instantiate a saved workflow's nodes and links into the CURRENT graph
+// (additive - nothing is cleared). Returns the created nodes; groups are
+// not imported. Nodes whose pack is missing are skipped with a warning.
+function nukeLinkInsertTemplate(template, baseX, baseY) {
+    const entries = Array.isArray(template?.nodes) ? template.nodes : [];
+    if (!entries.length) return [];
+
+    // Offset so the template's bounding-box top-left lands at (baseX, baseY)
+    let minX = Infinity, minY = Infinity;
+    for (const e of entries) {
+        if (Array.isArray(e.pos)) {
+            minX = Math.min(minX, e.pos[0]);
+            minY = Math.min(minY, e.pos[1]);
+        }
+    }
+    if (!isFinite(minX)) { minX = 0; minY = 0; }
+    const dx = baseX - minX;
+    const dy = baseY - minY;
+
+    const idMap = new Map();
+    const created = [];
+
+    for (const entry of entries) {
+        const node = LiteGraph.createNode(entry.type);
+        if (!node) {
+            console.warn(`[NukeLink] template: node type not installed, skipped: ${entry.type}`);
+            continue;
+        }
+        app.graph.add(node);
+
+        // configure() restores widgets/slots/properties; feed it a copy with
+        // the freshly assigned id and stale link references stripped.
+        let data = null;
+        try { data = JSON.parse(JSON.stringify(entry)); } catch (e) {}
+        if (data) {
+            data.id = node.id;
+            if (Array.isArray(data.inputs))  data.inputs.forEach(inp => { inp.link = null; });
+            if (Array.isArray(data.outputs)) data.outputs.forEach(out => { out.links = []; });
+            try { node.configure(data); } catch (e) {
+                console.warn(`[NukeLink] template: configure failed for ${entry.type}`, e);
+            }
+        }
+        node.pos = [
+            (Array.isArray(entry.pos) ? entry.pos[0] : 0) + dx,
+            (Array.isArray(entry.pos) ? entry.pos[1] : 0) + dy,
+        ];
+        idMap.set(entry.id, node);
+        created.push(node);
+    }
+
+    // Rebuild links: [id, origin_id, origin_slot, target_id, target_slot, type]
+    for (const link of template.links || []) {
+        const L = Array.isArray(link)
+            ? { o: link[1], os: link[2], t: link[3], ts: link[4] }
+            : { o: link.origin_id, os: link.origin_slot, t: link.target_id, ts: link.target_slot };
+        const src = idMap.get(L.o);
+        const dst = idMap.get(L.t);
+        if (!src || !dst) continue;
+        try { src.connect(L.os, dst, L.ts); } catch (e) {
+            console.warn("[NukeLink] template: could not restore link", link, e);
+        }
+    }
+
+    return created;
+}
+
 api.addEventListener("nukelink.receive", ({ detail }) => {
     const reads        = detail.reads || [];
     const fileLocation = detail.file_location || "";
+    const namePattern  = detail.name_pattern || "";
     const versionNumber = detail.version_number || "01";
     const frameDelim   = detail.frame_delim || null;
 
@@ -1218,49 +1490,62 @@ api.addEventListener("nukelink.receive", ({ detail }) => {
     const totalHeight = reads.length * VERTICAL_OFFSET;
     const startY = cy - totalHeight / 2;
 
+    // Template chosen in the Nuke send dialog (may be absent). The first Read
+    // is injected into the template's own Read - NukeLink node; any remaining
+    // Reads are created as plain Read nodes beside it.
+    let templateNodes = [];
+    let tRead = null;
+    let tPB   = null;
+    if (detail.template_workflow) {
+        templateNodes = nukeLinkInsertTemplate(detail.template_workflow, cx, startY);
+        tRead = templateNodes.find(n => n.type === "Read - NukeLink") || null;
+        tPB   = templateNodes.find(n => n.type === "Path Builder - NukeLink") || null;
+        if (templateNodes.length && !tRead) {
+            console.warn("[NukeLink] template has no Read - NukeLink node; sending Reads as plain nodes");
+        }
+        if (tRead) nukeLinkApplyRead(tRead, reads[0]);
+    }
+
+    const bareReads = tRead ? reads.slice(1) : reads;
+    const bareX = templateNodes.length ? cx - 480 : cx;
+
     const readNodes = [];
 
-    reads.forEach((read, i) => {
+    bareReads.forEach((read, i) => {
         const node = LiteGraph.createNode("Read - NukeLink");
         if (!node) {
             console.error("[NukeLink] Failed to create Read - NukeLink node");
             return;
         }
 
-        node._nukeWasConfigured = true;
-        const showPreview = app.ui.settings.getSettingValue("NukeLink.Read.ShowPreviewByDefault", true);
-        const playPreview = app.ui.settings.getSettingValue("NukeLink.Read.PlayPreviewByDefault", true);
-        node._nukeLinkPreviewRestore = {
-            hidden: !showPreview,
-            paused: !playPreview,
-        };
-        node._nukeReadRestore = {
-            first_frame:    read.first_frame,
-            last_frame:     read.last_frame,
-            colorspace:     read.colorspace,
-            missing_frames: read.missing_frames,
-        };
-
         app.graph.add(node);
-        node.pos = [cx - node.size[0] / 2, startY + i * VERTICAL_OFFSET];
-
-        const fileWidget = node.widgets?.find(w => w.name === "file_path");
-        if (fileWidget) fileWidget.value = read.file_path;
-
-        setTimeout(() => {
-            node.updateParameters({
-                filename:       read.file_path,
-                first_frame:    read.first_frame,
-                last_frame:     read.last_frame,
-                colorspace:     read.colorspace,
-                missing_frames: read.missing_frames,
-            }, true);
-        }, 0);
+        node.pos = [bareX - node.size[0] / 2, startY + i * VERTICAL_OFFSET];
+        nukeLinkApplyRead(node, read);
 
         readNodes.push(node);
     });
 
-    // Drop one Path Builder to the right of the rightmost Read node
+    // Populate the Path Builder with what Nuke sent - either the template's
+    // own Path Builder, or a standalone one dropped next to the Read nodes.
+    const populatePB = (pb) => {
+        nukeLinkSetWidget(pb, "file_location",  fileLocation);
+        nukeLinkSetWidget(pb, "version_number", versionNumber);
+        nukeLinkSetWidget(pb, "version_iterate", app.ui.settings.getSettingValue("NukeLink.PathBuilder.VersionIterate", true));
+        nukeLinkSetWidget(pb, "shot", detail.shot || "");
+        if (namePattern) nukeLinkSetWidget(pb, "name_pattern", namePattern);
+        if (frameDelim !== null) nukeLinkSetWidget(pb, "frame_delim", frameDelim);
+        nukeLinkSetWidget(pb, "nuke_port", detail.nuke_port || "");
+    };
+
+    if (tPB) {
+        tPB._nukeWasConfigured = true;
+        setTimeout(() => {
+            populatePB(tPB);
+            app.graph.setDirtyCanvas(true);
+        }, 0);
+        return;
+    }
+
     if (!detail.send_path_builder) {
         app.graph.setDirtyCanvas(true);
         return;
@@ -1272,25 +1557,23 @@ api.addEventListener("nukelink.receive", ({ detail }) => {
             return;
         }
 
+        pb._nukeWasConfigured = true;
         app.graph.add(pb);
 
-        const rightmost = readNodes.reduce((max, n) => {
-            return (n.pos[0] + n.size[0]) > (max.pos[0] + max.size[0]) ? n : max;
-        }, readNodes[0]);
+        const anchors = readNodes.length ? readNodes : templateNodes;
+        if (anchors.length) {
+            const rightmost = anchors.reduce((max, n) => {
+                return (n.pos[0] + n.size[0]) > (max.pos[0] + max.size[0]) ? n : max;
+            }, anchors[0]);
+            const centerY = readNodes.length
+                ? startY + (bareReads.length - 1) * VERTICAL_OFFSET / 2
+                : rightmost.pos[1];
+            pb.pos = [rightmost.pos[0] + rightmost.size[0] + 50, centerY - pb.size[1] / 2];
+        } else {
+            pb.pos = [cx, cy];
+        }
 
-        const centerY = startY + (reads.length - 1) * VERTICAL_OFFSET / 2;
-        pb.pos = [rightmost.pos[0] + rightmost.size[0] + 50, centerY - pb.size[1] / 2];
-
-        const setPB = (name, value) => {
-            const w = pb.widgets?.find(w => w.name === name);
-            if (w) w.value = value;
-        };
-
-        setPB("file_location",  fileLocation);
-        setPB("version_number", versionNumber);
-        setPB("shot", detail.shot || "");
-        if (frameDelim !== null) setPB("frame_delim", frameDelim);
-        setPB("nuke_port", detail.nuke_port || "");
+        populatePB(pb);
 
         app.graph.setDirtyCanvas(true);
     }, 0);

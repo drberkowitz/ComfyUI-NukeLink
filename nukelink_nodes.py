@@ -10,6 +10,7 @@ from .utils import (
     read_image,
     write_image,
     resolve_file_path,
+    resolve_pathbuilder_path,
     OIIO_AVAILABLE,
     CV2_AVAILABLE,
     PIL_AVAILABLE,
@@ -94,7 +95,12 @@ class NukeLinkRead:
             return {"ui": {"images": []}, "result": (empty_image, empty_mask, 0)}
 
         file_path = resolve_file_path(file_path)
-        
+        if not file_path:
+            print("[NukeLinkRead] Rejected: invalid or unsafe file path")
+            empty_image = torch.zeros(1, 64, 64, 3)
+            empty_mask = torch.zeros(1, 64, 64)
+            return {"ui": {"images": []}, "result": (empty_image, empty_mask, 0)}
+
         print(f"[NukeLinkRead] Loading: {file_path}")
         
         try:
@@ -236,7 +242,10 @@ class NukeLinkWrite:
             return {"ui": {"nukelink_preview": []}}
 
         file_path = resolve_file_path(file_path)
-        
+        if not file_path:
+            print("[NukeLinkWrite] Rejected: invalid or unsafe file path")
+            return {"ui": {"nukelink_preview": [], "nukelink_error": ["Invalid path. No files saved."]}}
+
         # Capture separator intent from trailing non-alphanumeric character
         last_char = file_path[-1] if file_path else ""
         user_separator = last_char if not last_char.isalnum() else ""
@@ -333,11 +342,10 @@ class NukeLinkPathBuilder:
                 "shot":            ("STRING", {"default": "", "multiline": False, "placeholder": "e.g. PN_010_030"}),
                 "file_location":   ("STRING", {"default": "", "multiline": False, "placeholder": "e.g. E:/Shows/PathBuilder_Season1/Shots/PN_010_030/frmComfyUI/"}),
                 "bypass_location": ("BOOLEAN", {"default": False}),
+                "name_pattern":    ("STRING", {"default": "{shot}_{name}_v{version}", "multiline": False}),
                 "sequence_folder": ("BOOLEAN", {"default": True}),
-                "version_append":  ("BOOLEAN", {"default": True}),
                 "version_number":  ("STRING", {"default": "001"}),
                 "version_iterate": ("BOOLEAN", {"default": True}),
-                "version_delim":   ("STRING", {"default": "_"}),
                 "frame_delim":     ("STRING", {"default": "."}),
                 "nuke_port":       ("STRING", {"default": ""}),
             }
@@ -349,39 +357,21 @@ class NukeLinkPathBuilder:
     CATEGORY = "NukeLink"
     OUTPUT_NODE = False
 
-    def execute(self, name, shot, file_location, bypass_location, sequence_folder,
-                version_append, version_number, version_iterate, version_delim, frame_delim, nuke_port):
+    def execute(self, name, shot, file_location, bypass_location, name_pattern,
+                sequence_folder, version_number, version_iterate, frame_delim, nuke_port):
 
-        # Validate version_number - must be a non-negative integer string
-        stripped = version_number.strip()
-        if not stripped.isdigit():
+        path = resolve_pathbuilder_path(
+            name, shot, file_location, bypass_location,
+            sequence_folder, name_pattern, version_number,
+            frame_delim,
+        )
+
+        if not path:
             print("[NukeLinkPathBuilder] Invalid version_number, outputting blank path")
             return ("",)
 
-        version_str = stripped.zfill(len(stripped))
-
-        # Build the versioned name stem
-        name_full = f"{shot}{version_delim}{name}" if shot else name
-        if version_append:
-            stem = f"{name_full}{version_delim}v{version_str}"
-        else:
-            stem = name_full
-
-        # Build folder portion
-        if bypass_location:
-            folder = ""
-        else:
-            loc = file_location.rstrip("/\\")
-            folder = loc + "/" if loc else ""
-
-        # Assemble full path
-        if sequence_folder:
-            path = f"{folder}{stem}/{stem}{frame_delim}"
-        else:
-            path = f"{folder}{stem}{frame_delim}"
-
         print(f"[NukeLinkPathBuilder] Output path: {path}")
-        return {"ui": {"nukelink_iterate": []}, "result": (path,)}
+        return {"result": (path,)}
 
 
 # ============================================================================

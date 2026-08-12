@@ -2,18 +2,74 @@ import glob
 import os
 import re
 import shutil
-from pathlib import Path
 from typing import List, Optional, Tuple
 
 # ============================================================================
 # utils.py - utility functions for NukeLink
 # ============================================================================
 
+ALLOWED_IMAGE_EXTENSIONS = {
+    "exr", "tiff", "tif", "dpx", "hdr", "png", "jpeg", "jpg",
+    "bmp", "tga", "psd", "ico", "rla", "sgi", "pnm", "ppm", "pgm",
+    "pbm", "webp", "gif", "heic", "jp2", "jxr", "pic", "pcx", "im", "dib"
+}
+
 def resolve_file_path(path: str) -> str:
     import folder_paths
     path = os.path.expandvars(os.path.expanduser(path.strip()))
     if not os.path.isabs(path):
-        path = os.path.join(folder_paths.get_output_directory(), path)
+        output_dir = folder_paths.get_output_directory()
+        joined = os.path.join(output_dir, path)
+        real_joined = os.path.realpath(joined)
+        real_output = os.path.realpath(output_dir)
+        if os.path.commonpath([real_output, real_joined]) != real_output:
+            print(f"[NukeLink] Rejected relative path escaping output dir: {path}")
+            return ""
+        path = joined
+    return path
+
+
+def resolve_pathbuilder_path(name, shot, file_location, bypass_location,
+                               sequence_folder, name_pattern, version_number,
+                               frame_delim) -> str:
+    stripped = version_number.strip()
+    version_used = "{version}" in name_pattern or "{version}" in file_location
+
+    if version_used:
+        if not stripped.isdigit():
+            return ""
+        version_str = stripped
+    else:
+        version_str = ""
+
+    def substitute(text):
+        text = text.replace("{shot}", shot)
+        text = text.replace("{name}", name)
+        if "{version}" in text:
+            text = text.replace("{version}", version_str)
+        return text
+
+    stem = substitute(name_pattern)
+    if not stem:
+        stem = name
+    if not stem:
+        return ""
+
+    file_location = substitute(file_location)
+
+    # Build folder portion
+    if bypass_location:
+        folder = ""
+    else:
+        loc = file_location.rstrip("/\\")
+        folder = loc + "/" if loc else ""
+
+    # Assemble full path
+    if sequence_folder:
+        path = f"{folder}{stem}/{stem}{frame_delim}"
+    else:
+        path = f"{folder}{stem}{frame_delim}"
+
     return path
 
 # ============================================================================
@@ -144,6 +200,10 @@ def detect_sequence(filepath: str) -> Tuple[str, List[int], int]:
 def resolve_loose_path(path: str) -> str:
     stem = path.rstrip("./\\")
     matches = glob.glob(stem + "*")
+    matches = [
+        m for m in matches
+        if os.path.splitext(m)[1].lstrip(".").lower() in ALLOWED_IMAGE_EXTENSIONS
+    ]
     if not matches:
         return path
     _, frame_spec, _ = parse_frame_pattern(path)
@@ -154,6 +214,47 @@ def resolve_loose_path(path: str) -> str:
         if any(c.isdigit() for c in base):
             return m
     return matches[0]
+
+
+def resolve_loose_sequence_path(path: str) -> str:
+    stem = path.rstrip("./\\")
+    matches = glob.glob(stem + "*")
+    matches = [
+        m for m in matches
+        if os.path.splitext(m)[1].lstrip(".").lower() in ALLOWED_IMAGE_EXTENSIONS
+    ]
+    if not matches:
+        return path
+
+    _, frame_spec, _ = parse_frame_pattern(path)
+    if frame_spec is not None:
+        return path
+
+    digit_matches = []
+    for m in sorted(matches):
+        base = os.path.basename(m)
+        frame_match = re.search(r"(\d+)(\.[^.]+)$", base)
+        if frame_match:
+            digit_matches.append((m, frame_match))
+
+    if len(digit_matches) < 2:
+        # Not a sequence, defer to single-file behaviour
+        for m in sorted(matches):
+            base = os.path.basename(m)
+            if any(c.isdigit() for c in base):
+                return m
+        return matches[0]
+
+    # Reconstruct a frame pattern from the first digit match, same
+    # convention as parse_frame_pattern's trailing-digits branch.
+    sample_path, sample_match = digit_matches[0]
+    frame_str = sample_match.group(1)
+    ext = sample_match.group(2)
+    padding = len(frame_str)
+    base_dir = os.path.dirname(sample_path)
+    base_name = os.path.basename(sample_path)[: sample_match.start(1)]
+    pattern = os.path.join(base_dir, f"{base_name}%0{padding}d{ext}") if base_dir else f"{base_name}%0{padding}d{ext}"
+    return pattern.replace("\\", "/")
 
 # ============================================================================
 # Image reading

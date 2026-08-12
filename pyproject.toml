@@ -1,6 +1,6 @@
 [project]
 name = "ComfyUI-NukeLink"
-version = "0.1.0"
+version = "0.2.0"
 description = "A ComfyUI custom node extension bridging Nuke and ComfyUI on the same machine."
 license = {file = "LICENSE"}
 

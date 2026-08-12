@@ -5,6 +5,7 @@ import shutil
 import socket
 import subprocess
 import json
+import uuid
 
 import numpy as np
 from PIL import Image as PILImage
@@ -19,6 +20,9 @@ from .utils import (
     detect_sequence,
     read_image,
     resolve_loose_path,
+    resolve_loose_sequence_path,
+    resolve_pathbuilder_path,
+    resolve_file_path,
 )
 
 # ============================================================================
@@ -41,11 +45,13 @@ async def nukelink_receive(request):
     server.PromptServer.instance.send_sync("nukelink.receive", {
         "reads":             reads,
         "file_location":     data.get("file_location", ""),
+        "name_pattern":      data.get("name_pattern", ""),
         "version_number":    data.get("version_number", "01"),
         "frame_delim":       data.get("frame_delim", None),
         "shot":              data.get("shot", ""),
         "send_path_builder": data.get("send_path_builder", True),
         "nuke_port":         data.get("nuke_port", None),
+        "template_workflow": data.get("template_workflow", None),
     })
 
     return web.Response(status=200, text="ok")
@@ -53,6 +59,31 @@ async def nukelink_receive(request):
 # ============================================================================
 # /nukelink/sendtonuke
 # ============================================================================
+
+@server.PromptServer.instance.routes.post("/nukelink/resolvepath")
+async def nukelink_resolve_path(request):
+    try:
+        data = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid JSON"}, status=400)
+
+    path = resolve_pathbuilder_path(
+        data.get("name", ""),
+        data.get("shot", ""),
+        data.get("file_location", ""),
+        data.get("bypass_location", False),
+        data.get("sequence_folder", True),
+        data.get("name_pattern", "{shot}_{name}_v{version}"),
+        data.get("version_number", ""),
+        data.get("frame_delim", "."),
+    )
+
+    if not path:
+        return web.json_response({"error": "invalid version_number"}, status=422)
+
+    return web.json_response({"path": path})
+
+
 @server.PromptServer.instance.routes.post("/nukelink/sendtonuke")
 async def nukelink_send_to_nuke(request):
     try:
@@ -66,24 +97,37 @@ async def nukelink_send_to_nuke(request):
 
     file_path = data.get("file_path", "")
 
-    file_path = os.path.expandvars(os.path.expanduser(file_path))
-    if not os.path.isabs(file_path):
-        file_path = os.path.join(folder_paths.get_output_directory(), file_path)
+    file_path = resolve_file_path(file_path)
+    if not file_path:
+        print("[NukeLink] sendtonuke rejected: invalid or unsafe path")
+        return web.Response(status=403, text="invalid or unsafe path")
 
-    file_path = resolve_loose_path(file_path)
-    _, frame_spec, _ = parse_frame_pattern(file_path)
+    file_path = resolve_loose_sequence_path(file_path)
 
-    if frame_spec is None:
-        if not os.path.isfile(file_path):
-            return web.Response(status=404, text="file not found: {}".format(file_path))
-        first_frame = 0
-        last_frame = 0
-    else:
-        _, found_frames, _ = detect_sequence(file_path)
-        if not found_frames:
-            return web.Response(status=404, text="no frames found for: {}".format(file_path))
-        first_frame = min(found_frames)
-        last_frame = max(found_frames)
+    provided_first = data.get("first_frame")
+    provided_last = data.get("last_frame")
+
+    if provided_first is not None and provided_last is not None:
+        try:
+            first_frame = int(provided_first)
+            last_frame = int(provided_last)
+        except (ValueError, TypeError):
+            provided_first = provided_last = None
+
+    if provided_first is None or provided_last is None:
+        _, frame_spec, _ = parse_frame_pattern(file_path)
+
+        if frame_spec is None:
+            if not os.path.isfile(file_path):
+                return web.Response(status=404, text="file not found: {}".format(file_path))
+            first_frame = 0
+            last_frame = 0
+        else:
+            _, found_frames, _ = detect_sequence(file_path)
+            if not found_frames:
+                return web.Response(status=404, text="no frames found for: {}".format(file_path))
+            first_frame = min(found_frames)
+            last_frame = max(found_frames)
 
     payload = json.dumps({
         "file_path":   file_path.replace("\\", "/"),
@@ -137,26 +181,51 @@ async def nukelink_open_in_folder(request):
     if not path:
         return web.Response(status=400, text="missing path")
 
-    path = os.path.expandvars(os.path.expanduser(path))
-    if not os.path.isabs(path):
-        path = os.path.join(folder_paths.get_output_directory(), path)
+    path = resolve_file_path(path)
+    if not path:
+        print("[NukeLink] openinfolder rejected: invalid or unsafe path")
+        return web.Response(status=403, text="invalid or unsafe path")
 
-    path = resolve_loose_path(path)
-    _, frame_spec, padding = parse_frame_pattern(path)
-    is_sequence = frame_spec is not None and padding > 0
+    widget_file_type = data.get("file_type")
+    widget_first_frame = data.get("first_frame")
 
     select_path = None
 
-    if is_sequence:
-        _, found_frames, _ = detect_sequence(path)
-        if found_frames:
-            first_frame = min(found_frames)
-            _, frame_spec, padding = parse_frame_pattern(path)
-            select_path = expand_frame_pattern(path.replace("\\", "/"), first_frame, padding)
-            select_path = os.path.normpath(select_path)
+    if widget_file_type and widget_first_frame is not None:
+        # Exact construction from widget values, no glob-guessing.
+        base, _ = os.path.splitext(path.rstrip("./\\"))
+        pattern, frame_spec, padding = parse_frame_pattern(path)
+        is_sequence = frame_spec is not None and padding > 0
+
+        if is_sequence:
+            try:
+                exact_frame = int(widget_first_frame)
+                candidate = expand_frame_pattern(pattern, exact_frame, padding)
+                candidate = os.path.normpath(candidate)
+                if os.path.isfile(candidate):
+                    select_path = candidate
+            except (ValueError, TypeError):
+                pass
+        else:
+            candidate = "{}.{}".format(base, widget_file_type)
+            candidate = os.path.normpath(candidate)
+            if os.path.isfile(candidate):
+                select_path = candidate
     else:
-        if os.path.isfile(path):
-            select_path = os.path.normpath(path)
+        path = resolve_loose_path(path)
+        _, frame_spec, padding = parse_frame_pattern(path)
+        is_sequence = frame_spec is not None and padding > 0
+
+        if is_sequence:
+            _, found_frames, _ = detect_sequence(path)
+            if found_frames:
+                first_frame = min(found_frames)
+                _, frame_spec, padding = parse_frame_pattern(path)
+                select_path = expand_frame_pattern(path.replace("\\", "/"), first_frame, padding)
+                select_path = os.path.normpath(select_path)
+        else:
+            if os.path.isfile(path):
+                select_path = os.path.normpath(path)
 
     folder = os.path.dirname(select_path) if select_path else (
         os.path.normpath(path) if os.path.isdir(path) else os.path.dirname(os.path.normpath(path))
@@ -164,6 +233,10 @@ async def nukelink_open_in_folder(request):
 
     if not os.path.isdir(folder):
         return web.Response(status=404, text="folder not found: {}".format(folder))
+
+    if folder.rstrip("/\\").lower().endswith(".app"):
+        print(f"[NukeLink] openinfolder rejected: refusing to open .app bundle: {folder}")
+        return web.Response(status=403, text="refusing to open an application bundle")
 
     import sys
     import subprocess
@@ -191,11 +264,12 @@ async def nukelink_file_exists(request):
     if not path:
         return web.Response(status=400, text="missing path")
 
-    path = os.path.expandvars(os.path.expanduser(path))
-    if not os.path.isabs(path):
-        path = os.path.join(folder_paths.get_output_directory(), path)
+    path = resolve_file_path(path)
+    if not path:
+        print("[NukeLink] fileexists rejected: invalid or unsafe path")
+        return web.Response(status=403, text="invalid or unsafe path")
 
-    path = resolve_loose_path(path)
+    path = resolve_loose_sequence_path(path)
     _, frame_spec, padding = parse_frame_pattern(path)
     is_sequence = frame_spec is not None and padding > 0
 
@@ -279,11 +353,7 @@ async def nukelink_view_video(request):
     if not frames_to_write:
         return web.Response(status=204)
 
-    # Clean up temp dirs from previous requests before writing new ones
-    for _dir_name in ("nukelink_placeholders", "nukelink_processed"):
-        _dir_path = os.path.join(folder_paths.get_temp_directory(), _dir_name)
-        if os.path.isdir(_dir_path):
-            shutil.rmtree(_dir_path, ignore_errors=True)
+    request_id = uuid.uuid4().hex[:8]
 
     # Generate placeholder images if needed (black or error frames)
     needs_placeholders = any(t in ("black", "error") for t, _ in frames_to_write)
@@ -295,7 +365,7 @@ async def nukelink_view_video(request):
         from PIL import ImageDraw
 
         placeholder_dir = os.path.join(
-            folder_paths.get_temp_directory(), "nukelink_placeholders"
+            folder_paths.get_temp_directory(), "nukelink_placeholders_{}".format(request_id)
         )
         os.makedirs(placeholder_dir, exist_ok=True)
 
@@ -345,16 +415,8 @@ async def nukelink_view_video(request):
                 err_img.save(err_path)
                 error_paths[frame_num] = err_path
 
-    # Apply colorspace approximation to real frames if needed
     needs_colorspace = colorspace in ("sRGB", "ACEScg")
-    processed_dir = None
     processed_cache = {}
-
-    if needs_colorspace:
-        processed_dir = os.path.join(
-            folder_paths.get_temp_directory(), "nukelink_processed"
-        )
-        os.makedirs(processed_dir, exist_ok=True)
 
     def get_processed_path(src_path):
         if src_path in processed_cache:
@@ -387,7 +449,7 @@ async def nukelink_view_video(request):
 
         img_uint8 = (img * 255.0).astype(np.uint8)
         out_name = os.path.basename(src_path) + "_preview.png"
-        out_path = os.path.join(processed_dir, out_name)
+        out_path = os.path.join(opaque_dir, out_name)
         PILImage.fromarray(img_uint8, mode="RGB").save(out_path)
         processed_cache[src_path] = out_path
         return out_path
@@ -397,6 +459,11 @@ async def nukelink_view_video(request):
     concat_path = os.path.join(
         folder_paths.get_temp_directory(), "nukelink_preview.txt"
     )
+
+    opaque_dir = os.path.join(
+        folder_paths.get_temp_directory(), "nukelink_processed_{}".format(request_id)
+    )
+    os.makedirs(opaque_dir, exist_ok=True)
 
     def ensure_opaque(src_path):
         img = read_image(src_path)
@@ -410,8 +477,7 @@ async def nukelink_view_video(request):
         alpha = np.full((*rgb.shape[:2], 1), 255, dtype=np.uint8)
         img_uint8 = np.concatenate([rgb, alpha], axis=-1)
         out_name = os.path.basename(src_path) + "_opaque.png"
-        out_path = os.path.join(folder_paths.get_temp_directory(), "nukelink_processed", out_name)
-        os.makedirs(os.path.dirname(out_path), exist_ok=True)
+        out_path = os.path.join(opaque_dir, out_name)
         PILImage.fromarray(img_uint8, mode="RGBA").save(out_path)
         return out_path
 
@@ -428,7 +494,9 @@ async def nukelink_view_video(request):
             results.append(opaque.replace("\\", "/").replace("'", "\\'"))
         return results
 
+    print("[NukeLink DEBUG] about to build concat entries (thread)")
     opaque_paths = await asyncio.to_thread(build_concat_entries)
+    print("[NukeLink DEBUG] concat entries built, count:", len(opaque_paths))
     with open(concat_path, "w") as f:
         f.write("ffconcat version 1.0\n")
         for write_path in opaque_paths:
@@ -448,6 +516,7 @@ async def nukelink_view_video(request):
         "-",
     ]
 
+    print("[NukeLink DEBUG] about to launch ffmpeg subprocess")
     resp = web.StreamResponse()
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -455,19 +524,31 @@ async def nukelink_view_video(request):
             stdout=subprocess.PIPE,
             stdin=subprocess.DEVNULL,
         )
+        print("[NukeLink DEBUG] ffmpeg subprocess launched, pid:", proc.pid)
         try:
             resp.content_type = "video/webm"
             await resp.prepare(request)
+            print("[NukeLink DEBUG] response prepared, entering read loop")
+            chunk_count = 0
             while True:
                 chunk = await proc.stdout.read(2 ** 20)
                 if not chunk:
                     break
+                chunk_count += 1
                 await resp.write(chunk)
+            print("[NukeLink DEBUG] read loop exited normally, chunks written:", chunk_count)
             await proc.wait()
+            print("[NukeLink DEBUG] ffmpeg process exited, returncode:", proc.returncode)
         except (ConnectionResetError, ConnectionError):
+            print("[NukeLink DEBUG] caught ConnectionResetError/ConnectionError, killing ffmpeg")
             proc.kill()
     except BrokenPipeError:
+        print("[NukeLink DEBUG] caught BrokenPipeError")
         pass
+    finally:
+        for _dir in (placeholder_dir, opaque_dir):
+            if _dir and os.path.isdir(_dir):
+                shutil.rmtree(_dir, ignore_errors=True)
 
     return resp
 
