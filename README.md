@@ -10,7 +10,7 @@
 
 A bridge between Nuke and ComfyUI on the same machine, allowing you to send Read nodes from Nuke directly into ComfyUI and return rendered outputs back to Nuke as Read nodes.
 
-![Hero Shot](https://github.com/user-attachments/assets/d5d216bc-f877-4d7a-b0b3-949c4d1ca95d)
+![Hero Shot](https://github.com/user-attachments/assets/e2265618-ded3-42e7-99ff-098bf4bf2ed0)
 
 ---
 
@@ -114,7 +114,10 @@ NukeLink uses a shared token system to fill in shot names, show names, version n
 
 - `OUTPUT_LOCATION` - Where NukeLink tells Path Builder to write output, built using the tokens above. You can also set this to a plain, fixed folder path with no tokens in it at all if you don't need it to vary per shot. If a token in this string can't be resolved, the output location is left blank and you'll be told to check this setting when you send to ComfyUI.
 
-- `NAME_PATTERN` - The base filename sent over to ComfyUI's Path Builder node. `{name}`, `{shot}`, and `{version}` all stay as literal, unfilled text in this file, they're filled in later on the ComfyUI side, using the shot and version number fields on the Path Builder node itself. If `SCRIPT_PATH_PATTERNS` resolves successfully, those two fields come over already filled in from Nuke, so in practice you're usually just typing in `{name}` yourself once you're in ComfyUI.
+> [!TIP]
+> You can also use `{nuke_script_dir}` as a token to reference the folder your .nk script is saved in. Adding :N climbs up that many folders first, so `{nuke_script_dir:2}` would be two folders above the script's location.
+
+- `NAME_PATTERN` - The base filename sent over to ComfyUI's Path Builder node. `{name}`, `{shot}`, and `{version}` all stay as literal, unfilled text in this file, they're filled in later on the ComfyUI side, using the shot and version number fields on the Path Builder node itself. If `SCRIPT_PATH_PATTERNS` resolves successfully, those two fields come over already filled in from Nuke, so in practice you're usually just typing into the *name* field yourself once you're in ComfyUI.
 
 - `WORKFLOW_FOLDERS` - Folders NukeLink scans for ComfyUI workflow templates, offered as a dropdown when you send to ComfyUI. Each entry pairs a folder path (tokens allowed, same as above) with a label. Leave the label blank to mark that folder as your global template folder, its templates always appear first in the dropdown, no matter where that entry sits in the list. Give a folder any other label, a token like `{show}` or just plain text like *Wan 2.2*, and its templates show up below, grouped and prefixed with that label, sorted alphabetically alongside any other labeled folders.
 
@@ -132,6 +135,8 @@ NukeLink uses a shared token system to fill in shot names, show names, version n
 2. Tab search for **Send To ComfyUI** or right click in the node graph and select it under the SendToComfyUI menu
 3. A dialog will appear asking you to pick a workflow template, or `*` for no template (plain Read and Path Builder nodes, the default behavior). An alert will pop up confirming the node was sent and asking you to switch to ComfyUI. A `Read - NukeLink` node will be dropped on the canvas for each selected Nuke Read node, pre-populated with file path, colorspace, frame range, and missing frames mode. A Path Builder node will also be created to the right, pre-populated with your output location, version number, and shot name.  The Path Builder node also includes the correct Nuke listener port so the Write node knows exactly where to send renders back to.
 
+![Template Picker](https://github.com/user-attachments/assets/8c0c958c-69ee-4680-bf60-07cbcbac7db2)
+
 ### ⬅️ ComfyUI to Nuke
 
 1. In ComfyUI, right-click a Write node after the graph has been executed and image(s) have been written to disk
@@ -140,7 +145,7 @@ NukeLink uses a shared token system to fill in shot names, show names, version n
 
 <table>
   <tr>
-    <td><img src="https://github.com/user-attachments/assets/bb30a1af-10a2-4574-a307-2af047026d11" width="100%"/></td>
+    <td><img src="https://github.com/user-attachments/assets/3fff5a4a-dffc-48ab-8a36-17b0e10dfd8e" width="100%"/></td>
     <td><img src="https://github.com/user-attachments/assets/3c35e73e-aa1a-454a-b20b-6c11e82615b1" width="100%"/></td>
   </tr>
 </table>

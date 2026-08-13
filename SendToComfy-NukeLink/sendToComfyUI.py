@@ -536,7 +536,7 @@ class SendToComfyUIPanel(nukescripts.PythonPanel):
 
         self._label_to_path = label_to_path
 
-        self.setMinimumSize(500, 100)
+        self.setMinimumSize(400, 100)
 
         self.workflowKnob = nuke.Enumeration_Knob("workflow", "Template:", labels)
         self.workflowKnob.setTooltip(
