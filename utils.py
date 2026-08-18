@@ -24,13 +24,6 @@ def resolve_file_path(path: str) -> str:
         return ""
 
     if os.path.isabs(stripped):
-        # Compares the path's normalized form against its fully resolved
-        # form (symlinks followed) to catch symlink/junction redirection.
-        raw_abs = os.path.normcase(os.path.abspath(stripped))
-        real_abs = os.path.normcase(os.path.realpath(stripped))
-        if raw_abs != real_abs:
-            print(f"[NukeLink] Rejected path redirected by symlink/junction: {stripped}")
-            return ""
         return stripped
 
     path = os.path.expandvars(os.path.expanduser(stripped))
@@ -45,12 +38,6 @@ def resolve_file_path(path: str) -> str:
         path = joined
         return path
 
-    # path was relative but expanded to absolute via ~ or $HOME/%VAR%
-    raw_abs = os.path.normcase(os.path.abspath(path))
-    real_abs = os.path.normcase(os.path.realpath(path))
-    if raw_abs != real_abs:
-        print(f"[NukeLink] Rejected path redirected by symlink/junction: {path}")
-        return ""
     return path
 
 
