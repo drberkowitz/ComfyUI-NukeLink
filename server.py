@@ -31,6 +31,17 @@ from .utils import (
 
 web = server.web
 
+# ---------------------------------------------------------------------------
+# Config
+# ---------------------------------------------------------------------------
+# Must match LISTENER_PORT_START and LISTENER_PORT_RANGE in
+# SendToComfy-NukeLink/sendToComfyUI.py on the Nuke side. If you change
+# those values, change these to match, or NukeLink will not be able to
+# find the Nuke listener.
+NUKE_PORT_START = 54321
+NUKE_PORT_RANGE = 10
+# ---------------------------------------------------------------------------
+
 @server.PromptServer.instance.routes.post("/nukelink/receive")
 async def nukelink_receive(request):
     try:
@@ -94,6 +105,12 @@ async def nukelink_send_to_nuke(request):
     nuke_port = data.get("nuke_port")
     if not nuke_port:
         return web.Response(status=400, text="missing nuke_port")
+    try:
+        nuke_port = int(nuke_port)
+    except (ValueError, TypeError):
+        return web.Response(status=400, text="invalid nuke_port")
+    if not (NUKE_PORT_START <= nuke_port <= NUKE_PORT_START + NUKE_PORT_RANGE - 1):
+        return web.Response(status=400, text="port out of range")
 
     file_path = data.get("file_path", "")
 
@@ -151,7 +168,7 @@ async def nukelink_ping_port(request):
     except ValueError:
         return web.Response(status=400, text="invalid port")
 
-    if not (54321 <= port <= 54330):
+    if not (NUKE_PORT_START <= port <= NUKE_PORT_START + NUKE_PORT_RANGE - 1):
         return web.Response(status=400, text="port out of range")
 
     def _try_connect(p):
@@ -258,31 +275,6 @@ async def nukelink_open_in_folder(request):
 
     return web.Response(status=200, text="ok")
 
-@server.PromptServer.instance.routes.get("/nukelink/fileexists")
-async def nukelink_file_exists(request):
-    path = request.rel_url.query.get("path", "").strip()
-    if not path:
-        return web.Response(status=400, text="missing path")
-
-    path = resolve_file_path(path)
-    if not path:
-        print("[NukeLink] fileexists rejected: invalid or unsafe path")
-        return web.Response(status=403, text="invalid or unsafe path")
-
-    path = resolve_loose_sequence_path(path)
-    _, frame_spec, padding = parse_frame_pattern(path)
-    is_sequence = frame_spec is not None and padding > 0
-
-    if is_sequence:
-        _, found_frames, _ = detect_sequence(path)
-        if found_frames:
-            return web.Response(status=200, text="ok")
-        return web.Response(status=404, text="no frames found")
-    else:
-        if os.path.isfile(path):
-            return web.Response(status=200, text="ok")
-        return web.Response(status=404, text="file not found")
-
 def _send_to_nuke_socket(port, payload, timeout=5.0):
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.settimeout(timeout)
@@ -316,7 +308,10 @@ async def nukelink_view_video(request):
     colorspace    = query.get("colorspace", "sRGB")
     missing_frames = query.get("missing_frames", "black")
 
-    filename = filename.replace("\\", "/")
+    filename = resolve_file_path(filename)
+    if not filename:
+        print("[NukeLink] viewvideo rejected: invalid or unsafe path")
+        return web.Response(status=403, text="invalid or unsafe path")
 
     pattern, frame_spec, padding = parse_frame_pattern(filename)
 
@@ -564,7 +559,10 @@ async def nukelink_view_image(request):
     if not filename:
         return web.Response(status=400, text="missing filename")
 
-    filename = filename.replace("\\", "/")
+    filename = resolve_file_path(filename)
+    if not filename:
+        print("[NukeLink] viewimage rejected: invalid or unsafe path")
+        return web.Response(status=403, text="invalid or unsafe path")
 
     if not os.path.isfile(filename):
         return web.Response(status=204)

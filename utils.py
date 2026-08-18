@@ -16,7 +16,24 @@ ALLOWED_IMAGE_EXTENSIONS = {
 
 def resolve_file_path(path: str) -> str:
     import folder_paths
-    path = os.path.expandvars(os.path.expanduser(path.strip()))
+    stripped = path.strip()
+
+    path_components = re.split(r"[/\\]", stripped)
+    if ".." in path_components:
+        print(f"[NukeLink] Rejected path containing '..' component: {stripped}")
+        return ""
+
+    if os.path.isabs(stripped):
+        # Compares the path's normalized form against its fully resolved
+        # form (symlinks followed) to catch symlink/junction redirection.
+        raw_abs = os.path.normcase(os.path.abspath(stripped))
+        real_abs = os.path.normcase(os.path.realpath(stripped))
+        if raw_abs != real_abs:
+            print(f"[NukeLink] Rejected path redirected by symlink/junction: {stripped}")
+            return ""
+        return stripped
+
+    path = os.path.expandvars(os.path.expanduser(stripped))
     if not os.path.isabs(path):
         output_dir = folder_paths.get_output_directory()
         joined = os.path.join(output_dir, path)
@@ -26,6 +43,14 @@ def resolve_file_path(path: str) -> str:
             print(f"[NukeLink] Rejected relative path escaping output dir: {path}")
             return ""
         path = joined
+        return path
+
+    # path was relative but expanded to absolute via ~ or $HOME/%VAR%
+    raw_abs = os.path.normcase(os.path.abspath(path))
+    real_abs = os.path.normcase(os.path.realpath(path))
+    if raw_abs != real_abs:
+        print(f"[NukeLink] Rejected path redirected by symlink/junction: {path}")
+        return ""
     return path
 
 

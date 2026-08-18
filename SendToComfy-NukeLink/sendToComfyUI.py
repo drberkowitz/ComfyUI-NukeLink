@@ -10,6 +10,9 @@ import threading
 # ---------------------------------------------------------------------------
 COMFYUI_HOST = "http://127.0.0.1:8188"
 
+# If you change LISTENER_PORT_START or LISTENER_PORT_RANGE, you must also
+# update NUKE_PORT_START and NUKE_PORT_RANGE in server.py in the ComfyUI-NukeLink
+# folder to match, or NukeLink will not be able to find the Nuke listener.
 LISTENER_PORT_START = 54321
 LISTENER_PORT_RANGE = 10
 

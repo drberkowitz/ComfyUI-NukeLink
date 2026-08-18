@@ -73,6 +73,8 @@ A bridge between Nuke and ComfyUI on the same machine, allowing you to send Read
 1. Navigate to your ComfyUI `custom_nodes` folder
 2. Clone this repo:
 `git clone https://github.com/drberkowitz/ComfyUI-NukeLink.git`
+4. Install dependencies:
+`pip install -r ComfyUI-NukeLink/requirements.txt`
 3. Restart ComfyUI
 
 ### Nuke Side
@@ -100,6 +102,8 @@ Once Nuke restarts, you'll find the command under **Edit > Node > Send To ComfyU
 Open `sendToComfyUI.py` in a text editor. The config block near the top of the file is the primary section you will need to edit for your pipeline.
 
 - `COMFYUI_HOST` - The address ComfyUI is running on. Default is `http://127.0.0.1:8188`. Change this if you are running ComfyUI on a different port.
+
+- `LISTENER_PORT_START` / `LISTENER_PORT_RANGE` - The range of ports the Nuke listener tries to bind to. Defaults to `54321` through `54330` (10 ports), enough to run several Nuke instances at once, each on its own port. If you change either value, update `NUKE_PORT_START` and `NUKE_PORT_RANGE` to match in `server.py`, found in the root `ComfyUI-NukeLink` folder, or NukeLink won't be able to find the Nuke listener.
 
 NukeLink uses a shared token system to fill in shot names, show names, version numbers, output locations, and workflow templates automatically. `SCRIPT_PATH_PATTERNS` is where these tokens come from, and `OUTPUT_LOCATION`, `NAME_PATTERN`, and `WORKFLOW_FOLDERS` are where they get used.
 

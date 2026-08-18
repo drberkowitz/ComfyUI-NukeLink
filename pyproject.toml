@@ -1,8 +1,14 @@
 [project]
 name = "ComfyUI-NukeLink"
-version = "0.2.0"
+version = "0.2.1"
 description = "A ComfyUI custom node extension bridging Nuke and ComfyUI on the same machine."
+readme = "README.md"
 license = {file = "LICENSE"}
-
+dependencies = [
+    "imageio-ffmpeg",
+    "OpenImageIO",
+    "opencv-python-headless",
+    "opencolorio",
+]
 [project.urls]
 Repository = "https://github.com/drberkowitz/ComfyUI-NukeLink"
